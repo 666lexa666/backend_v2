@@ -5,7 +5,8 @@ const { partnerApiAuth }=require('../lib/partnerApiAuth');
 const { selectTerminalForPayment,loadTerminalRuntime,createPaymentCore,setPaymentProviderResult,markPaymentFailed }=require('../lib/paymentCore');
 const { executeQrPayment }=require('../lib/providerQr');
 const { findBankById }=require('../lib/legacyBankAdapter');
-const { findSubscriptionInstrument,chargeSbpSubscription }=require('../lib/subscriptionService');
+const { findSubscriptionInstrument,chargeSbpSubscription,chargeCardSubscription }=require('../lib/subscriptionService');
+const { normalizePartnerOrderId }=require('../lib/legacyPartnerCompatibility');
 
 const router=express.Router();
 
@@ -349,38 +350,132 @@ router.post('/subscriptions/charge',partnerApiAuth(),async(req,res,next)=>{
     const paymentPurpose=String(req.body?.paymentPurpose ?? '').trim();
     const subscriptionQrcId=req.body?.subscriptionQrcId?String(req.body.subscriptionQrcId).trim():null;
     const cardToken=req.body?.cardToken?String(req.body.cardToken).trim():null;
-    const orderId=req.body?.orderId==null?null:String(req.body.orderId).trim();
+    const partnerOrderId=normalizePartnerOrderId(req.body?.orderId);
     const errors=[];
+
+    if(partnerOrderId.error) errors.push(partnerOrderId.error);
     if(!Number.isFinite(amount) || amount<=0) errors.push('amount должен быть положительным целым числом в копейках');
     if(!paymentPurpose) errors.push('paymentPurpose обязателен');
     if(!subscriptionQrcId && !cardToken) errors.push('нужно указать subscriptionQrcId (для СБП) или cardToken (для карты)');
     if(subscriptionQrcId && cardToken) errors.push('укажите только один инструмент — subscriptionQrcId ИЛИ cardToken, не оба сразу');
-    if(errors.length) return res.status(400).json({success:false,error:'VALIDATION_ERROR',message:'Некорректные параметры запроса',details:errors});
+    if(errors.length){
+      return res.status(400).json({
+        success:false,
+        error:'VALIDATION_ERROR',
+        message:'Некорректные параметры запроса',
+        details:errors,
+      });
+    }
 
-    if(cardToken) return res.status(404).json({success:false,error:'INSTRUMENT_NOT_FOUND',message:'Инструмент подписки не найден, не активен, либо не принадлежит этому клиенту'});
-
-    const instrument=await findSubscriptionInstrument({
-      partnerId:req.partner.id,
-      subscriptionQrcId,
-      customerId:customerId || null,
-    });
-    if(!instrument) return res.status(404).json({success:false,error:'INSTRUMENT_NOT_FOUND',message:'Инструмент подписки не найден, не активен, либо не принадлежит этому клиенту'});
-
+    let instrument;
     try{
-      const result=await chargeSbpSubscription({partner:req.partner,instrument,amount,paymentPurpose,orderId,apiVersion:'v1'});
-      return res.json({
-        success:true,
-        paymentId:result.payment.id,
-        orderId:result.payment.partner_order_id || null,
-        qrcId:result.qrResponse.qrcId,
-        bankResponse:result.bankResponse,
+      instrument=await findSubscriptionInstrument({
+        partnerId:req.partner.id,
+        subscriptionQrcId,
+        cardToken,
+        customerId:customerId || null,
       });
     }catch(error){
-      if(['INSTRUMENT_TERMINAL_NOT_SET','INSTRUMENT_TERMINAL_UNAVAILABLE'].includes(error.code)){
+      if(error.code==='CUSTOMER_NOT_FOUND'){
+        return res.status(404).json({
+          success:false,
+          error:'CUSTOMER_NOT_FOUND',
+          message:'Клиент с таким customerId не найден',
+        });
+      }
+      throw error;
+    }
+
+    if(!instrument){
+      return res.status(404).json({
+        success:false,
+        error:'INSTRUMENT_NOT_FOUND',
+        message:'Инструмент подписки не найден, не активен, либо не принадлежит этому клиенту',
+      });
+    }
+
+    try{
+      if(String(instrument.payment_method).toUpperCase()==='SBP'){
+        const result=await chargeSbpSubscription({
+          partner:req.partner,
+          instrument,
+          amount,
+          paymentPurpose,
+          orderId:partnerOrderId.value,
+          apiVersion:'v1',
+        });
+        return res.json({
+          success:true,
+          paymentId:result.payment.id,
+          orderId:result.payment.partner_order_id || null,
+          qrcId:result.qrResponse?.qrcId || null,
+          bankResponse:result.bankResponse,
+        });
+      }
+
+      if(String(instrument.payment_method).toUpperCase()==='CARD'){
+        const result=await chargeCardSubscription({
+          partner:req.partner,
+          instrument,
+          amount,
+          paymentPurpose,
+          orderId:partnerOrderId.value,
+          apiVersion:'v1',
+        });
+        return res.json({
+          success:true,
+          paymentId:result.payment.id,
+          orderId:result.payment.partner_order_id || null,
+          bankResponse:result.bankResponse,
+        });
+      }
+
+      return res.status(409).json({
+        success:false,
+        error:'INSTRUMENT_TERMINAL_METHOD_MISMATCH',
+        message:'Способ работы исходного терминала не совпадает со способом подписки',
+      });
+    }catch(error){
+      if([
+        'INSTRUMENT_TERMINAL_NOT_SET',
+        'INSTRUMENT_TERMINAL_UNAVAILABLE',
+        'INSTRUMENT_TERMINAL_METHOD_MISMATCH',
+        'INSTRUMENT_BINDING_NOT_SET',
+      ].includes(error.code)){
         return res.status(409).json({success:false,error:error.code,message:error.message});
       }
-      if(error.publicCode==='BANK_QR_REGISTER_FAILED') return res.status(502).json({success:false,error:'BANK_QR_REGISTER_FAILED',message:'Банк не зарегистрировал QR для списания',bankStatusCode:error.statusCode || null});
-      if(error.publicCode==='BANK_SUBSCRIPTION_CHARGE_FAILED') return res.status(502).json({success:false,error:'BANK_SUBSCRIPTION_CHARGE_FAILED',message:'Банк отклонил списание по подписке',bankResponse:error.responseBody || null});
+
+      if(error.code==='VALIDATION_ERROR'){
+        return res.status(400).json({
+          success:false,
+          error:'VALIDATION_ERROR',
+          message:error.message,
+          details:error.details || [],
+        });
+      }
+
+      if(error.code==='INTERNAL_ERROR'){
+        return res.status(500).json({success:false,error:'INTERNAL_ERROR',message:error.message});
+      }
+
+      if(error.publicCode==='BANK_QR_REGISTER_FAILED'){
+        return res.status(502).json({
+          success:false,
+          error:'BANK_QR_REGISTER_FAILED',
+          message:'Банк не зарегистрировал QR для списания',
+          bankStatusCode:error.statusCode || null,
+        });
+      }
+
+      if(error.publicCode==='BANK_SUBSCRIPTION_CHARGE_FAILED'){
+        return res.status(502).json({
+          success:false,
+          error:'BANK_SUBSCRIPTION_CHARGE_FAILED',
+          message:'Банк отклонил списание по подписке',
+          bankResponse:error.responseBody || null,
+        });
+      }
+
       throw error;
     }
   }catch(error){return next(error);}
