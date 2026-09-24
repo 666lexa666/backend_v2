@@ -34,6 +34,7 @@ app.use('/v2', require('./routes/partnerRefundV2'));
 // /balance is intentionally removed in V2.
 
 app.use('/admin', require('./routes/adminAuth'));
+app.use('/admin', require('./routes/adminPortal'));
 app.use('/admin', require('./routes/adminTerminals'));
 app.use('/admin/payouts', require('./routes/adminPayouts'));
 app.use('/admin/expenses', require('./routes/adminExpenses'));
