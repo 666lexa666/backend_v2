@@ -1,6 +1,7 @@
 const express = require('express');
 const { partnerApiAuth } = require('../lib/partnerApiAuth');
-const { createPaymentCore, getPartnerPayment } = require('../lib/paymentCore');
+const { createPaymentCore, getPartnerPayment, setPaymentProviderResult, markPaymentFailed } = require('../lib/paymentCore');
+const { executeQrPayment } = require('../lib/providerQr');
 
 const router = express.Router();
 
@@ -15,15 +16,13 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
     if (!Number.isSafeInteger(amount) || amount <= 0) errors.push('amount должен быть положительным целым числом в копейках');
     if (!['SBP', 'CARD'].includes(method)) errors.push('method должен быть SBP или CARD');
     if (!paymentPurpose) errors.push('description обязателен');
-    if (errors.length) {
-      return res.status(400).json({ success: false, error: 'VALIDATION_ERROR', details: errors });
-    }
+    if (errors.length) return res.status(400).json({ success: false, error: 'VALIDATION_ERROR', details: errors });
 
-    const result = await createPaymentCore({
+    const input = {
       apiVersion: 'v2',
       partnerId: req.partner.id,
       amountMinor: amount,
-      currency: req.body?.currency || 'RUB',
+      currency: req.body?.currency || req.partner.account_currency || 'RUB',
       method,
       projectId: req.body?.projectId || null,
       terminalId: req.body?.terminalId || null,
@@ -32,21 +31,51 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
       webhookUrl: req.body?.callbackUrl || null,
       redirectUrl: req.body?.redirectUrl || null,
       qrcType: method === 'SBP' ? String(req.body?.qrcType || '02') : null,
+      expDt: req.partner.qr_exp_dt ?? 15,
+      localExpDt: req.partner.qr_local_exp_dt ?? 900,
       commissionPercent: req.partner.commission_percent ?? null,
-    });
+      currencyRateRub: req.partner.latest_currency_rate_rub || 1,
+    };
+
+    const result = await createPaymentCore(input);
+    let bankResponse = null;
+
+    if (method === 'SBP') {
+      try {
+        bankResponse = await executeQrPayment({ payment: result.payment, runtime: result.runtime, input });
+        await setPaymentProviderResult(result.payment.payment_pk, {
+          status: 'pending',
+          providerOrderId: bankResponse.bankOrderId || null,
+          qrcId: bankResponse.qrcId || null,
+          qrPayload: bankResponse.payload || null,
+        });
+      } catch (error) {
+        await markPaymentFailed(result.payment.payment_pk, error).catch(() => {});
+        return res.status(502).json({
+          success: false,
+          error: 'PROVIDER_PAYMENT_FAILED',
+          message: 'Платежный провайдер отклонил создание платежа',
+          paymentId: result.payment.id,
+        });
+      }
+    }
 
     return res.status(201).json({
       success: true,
       payment: {
         id: result.payment.id,
         requestId: result.payment.request_id,
-        status: result.payment.status,
+        status: method === 'SBP' ? 'pending' : result.payment.status,
         method: result.payment.payment_type,
         amount: Number(result.payment.amount_minor),
         currency: result.payment.currency,
         projectId: result.payment.project_id,
         terminalId: result.payment.partner_terminal_id,
         orderId: result.payment.partner_order_id,
+        qr: method === 'SBP' ? {
+          id: bankResponse?.qrcId || null,
+          payload: bankResponse?.payload || null,
+        } : null,
         createdAt: result.payment.created_at,
       },
     });
@@ -66,13 +95,7 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
 router.get('/payments/:id', partnerApiAuth(), async (req, res, next) => {
   try {
     const payment = await getPartnerPayment(req.partner.id, req.params.id);
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        error: 'PAYMENT_NOT_FOUND',
-        message: 'Платеж не найден',
-      });
-    }
+    if (!payment) return res.status(404).json({ success: false, error: 'PAYMENT_NOT_FOUND', message: 'Платеж не найден' });
 
     const provider = payment.payment_provider_data || null;
     const refunds = Array.isArray(payment.payment_refunds) ? payment.payment_refunds : [];
@@ -95,16 +118,8 @@ router.get('/payments/:id', partnerApiAuth(), async (req, res, next) => {
         expiresAt: payment.expires_at,
         createdAt: payment.created_at,
         updatedAt: payment.updated_at,
-        qr: provider ? {
-          id: provider.provider_qrc_id || payment.qrc_id || null,
-          payload: provider.qr_payload || null,
-        } : null,
-        refunds: refunds.map((row) => ({
-          id: row.id,
-          amount: Number(row.amount_minor),
-          status: row.status,
-          completedAt: row.completed_at,
-        })),
+        qr: provider ? { id: provider.provider_qrc_id || payment.qrc_id || null, payload: provider.qr_payload || null } : null,
+        refunds: refunds.map((row) => ({ id: row.id, amount: Number(row.amount_minor), status: row.status, completedAt: row.completed_at })),
       },
     });
   } catch (error) {
