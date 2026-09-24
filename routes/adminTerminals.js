@@ -13,6 +13,7 @@ const {
   createPartnerTerminal,
   updatePartnerTerminal,
   setPartnerTerminalArchived,
+  disablePartnerTerminal,
 } = require('../lib/terminalService');
 
 const router = express.Router();
@@ -110,6 +111,17 @@ router.patch('/partners/:partnerId/terminals/:terminalId', async (req, res, next
     const partnerId = Number(req.params.partnerId);
     if (!Number.isSafeInteger(partnerId) || partnerId <= 0) return res.status(400).json({ success: false, error: 'VALIDATION_ERROR', message: 'Некорректный ID партнёра' });
     const terminal = await updatePartnerTerminal(partnerId, String(req.params.terminalId), req.body || {});
+    res.json({ success: true, terminal });
+  } catch (error) { next(error); }
+});
+
+router.delete('/partners/:partnerId/terminals/:terminalId', async (req, res, next) => {
+  try {
+    const partnerId = Number(req.params.partnerId);
+    if (!Number.isSafeInteger(partnerId) || partnerId <= 0) {
+      return res.status(400).json({ success: false, error: 'VALIDATION_ERROR', message: 'Некорректный ID партнёра' });
+    }
+    const terminal = await disablePartnerTerminal(partnerId, String(req.params.terminalId));
     res.json({ success: true, terminal });
   } catch (error) { next(error); }
 });
