@@ -1,5 +1,6 @@
 const http = require('node:http');
 const { processPartnerWebhookBatch } = require('../lib/partnerWebhookOutbox');
+const { processApplicationDeliveryBatch } = require('../lib/applicationService');
 
 const pollIntervalMs = Number(process.env.PARTNER_WEBHOOK_POLL_INTERVAL_MS || 2000);
 const batchSize = Number(process.env.PARTNER_WEBHOOK_BATCH_SIZE || 50);
@@ -11,6 +12,8 @@ let lastTickAt = null;
 let lastSuccessAt = null;
 let lastError = null;
 let readyLogged = false;
+let applicationDeliveryConfigured = null;
+let applicationReadyLogged = false;
 
 async function tick() {
   lastTickAt = new Date().toISOString();
@@ -20,6 +23,12 @@ async function tick() {
       limit: batchSize,
       leaseSeconds,
     });
+    const applicationResult = await processApplicationDeliveryBatch({
+      workerId: `${workerId}-applications`,
+      limit: Number(process.env.APPLICATION_BATCH_SIZE || 10),
+      leaseSeconds,
+    });
+    applicationDeliveryConfigured = applicationResult.configured;
     lastSuccessAt = new Date().toISOString();
     lastError = null;
     if (!readyLogged) {
@@ -36,6 +45,15 @@ async function tick() {
         delivered: results.filter((x) => x.delivered).length,
         failed: results.filter((x) => !x.delivered).length,
       });
+    }
+    if (!applicationReadyLogged) {
+      applicationReadyLogged = true;
+      console.log('[application-delivery-worker:ready]', {
+        configured: applicationResult.configured,
+        claimed: applicationResult.claimed,
+      });
+    } else if (applicationResult.claimed) {
+      console.log('[application-delivery-worker]', applicationResult);
     }
   } catch (error) {
     lastError = error?.message || String(error);
@@ -57,6 +75,7 @@ const healthServer = http.createServer((req, res) => {
     lastTickAt,
     lastSuccessAt,
     lastError,
+    applicationDeliveryConfigured,
   }));
 });
 
