@@ -1,74 +1,151 @@
 const express = require('express');
 const { partnerApiAuth } = require('../lib/partnerApiAuth');
-const { createPaymentCore, getPartnerPayment, setPaymentProviderResult, markPaymentFailed } = require('../lib/paymentCore');
+const { getSupabaseAdminClient } = require('../lib/supabase');
+const {
+  createPaymentCore,
+  getPartnerPayment,
+  setPaymentProviderResult,
+  markPaymentFailed,
+  loadTerminalRuntime,
+} = require('../lib/paymentCore');
 const { executeQrPayment } = require('../lib/providerQr');
+const {
+  normalizePartnerOrderId,
+  normalizeUrlValue,
+  isAsciiHttpUrl,
+  resolveBankPaymentPurpose,
+  resolveLegacyTerminalAssignment,
+  validateLegacyQrRequest,
+} = require('../lib/legacyPartnerCompatibility');
 
 const router = express.Router();
 
 router.post('/', partnerApiAuth(), async (req, res, next) => {
   try {
-    const amount = req.body?.amount;
-    const qrcType = req.body?.qrcType;
-    const paymentPurpose = String(req.body?.paymentPurpose || req.body?.description || '').trim();
-    const errors = [];
-
-    if (qrcType == null || !['02', '03'].includes(String(qrcType))) errors.push('qrcType обязателен и должен быть 02 или 03');
-    if (!/^\d{1,12}$/.test(String(amount ?? '')) || Number(amount) <= 0) errors.push('amount должен быть целым числом в копейках от 1 до 12 цифр');
-    if (!paymentPurpose) errors.push('paymentPurpose обязателен');
-
-    if (String(qrcType) === '03') {
-      if (!req.body?.subscriptionPurpose) errors.push('subscriptionPurpose обязателен для QR-подписки qrcType=03');
-      if (!req.body?.subscriptionServiceId) errors.push('subscriptionServiceId обязателен для QR-подписки qrcType=03');
-      if (!req.body?.subscriptionServiceName) errors.push('subscriptionServiceName обязателен для QR-подписки qrcType=03');
-    }
-
-    if (errors.length) {
+    const db = getSupabaseAdminClient();
+    const partnerOrderId = normalizePartnerOrderId(req.body?.orderId);
+    if (partnerOrderId.error) {
       return res.status(400).json({
         success: false,
         error: 'VALIDATION_ERROR',
         message: 'Некорректные параметры QR-запроса',
-        details: errors,
+        details: [partnerOrderId.error],
       });
     }
 
+    const rawWebhookUrl = normalizeUrlValue(req.body?.webhookUrl);
+    if (rawWebhookUrl && (rawWebhookUrl.length > 2048 || !isAsciiHttpUrl(rawWebhookUrl))) {
+      return res.status(400).json({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        message: 'Некорректные параметры QR-запроса',
+        details: ['webhookUrl должен быть корректным HTTP(S) URL длиной не более 2048 символов'],
+      });
+    }
+
+    const terminalSelection = await resolveLegacyTerminalAssignment({
+      db,
+      partner: req.partner,
+      terminalId: req.body?.terminalId,
+      projectId: req.body?.projectId || null,
+      amountMinor: req.body?.amount,
+      method: 'SBP',
+    });
+
+    if (terminalSelection.reason === 'method_mismatch') {
+      return res.status(400).json({
+        success: false,
+        error: 'TERMINAL_PAYMENT_METHOD_MISMATCH',
+        message: 'Указанный terminalId предназначен для карточных платежей и не может использоваться в /qr',
+      });
+    }
+
+    if (!terminalSelection.assignment) {
+      const detail = terminalSelection.effectiveTerminalId
+        ? 'terminalId не найден, не принадлежит партнеру или выключен'
+        : (req.partner.terminal_auto_distribution_enabled
+          ? 'Сумма не подходит под лимиты ни одного активного терминала, участвующего в автораспределении'
+          : 'У партнера не настроен ни один терминал');
+      return res.status(400).json({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        message: 'Некорректные параметры QR-запроса',
+        details: [detail],
+      });
+    }
+
+    const runtime = await loadTerminalRuntime(terminalSelection.assignment);
+    const validation = validateLegacyQrRequest({
+      body: req.body || {},
+      partner: req.partner,
+      assignment: terminalSelection.assignment,
+      runtime,
+    });
+
+    if (validation.errors.length) {
+      return res.status(400).json({
+        success: false,
+        error: 'VALIDATION_ERROR',
+        message: 'Некорректные параметры QR-запроса',
+        details: validation.errors,
+      });
+    }
+
+    const normalized = validation.normalized;
     const input = {
       apiVersion: 'v1',
       partnerId: req.partner.id,
-      amountMinor: Number(amount),
+      amountMinor: normalized.amountMinor,
       transactionCurrency: 'RUB',
       accountCurrency: req.partner.account_currency || 'RUB',
       currencyMarkupPercent: req.partner.currency_markup_percent || 0,
       method: 'SBP',
-      projectId: req.body?.projectId || null,
-      terminalId: req.body?.terminalId || null,
-      orderId: req.body?.orderId || null,
-      paymentPurpose,
-      webhookUrl: req.body?.webhookUrl || null,
-      redirectUrl: req.body?.redirectUrl || req.partner.redirect_url || null,
-      qrcType: String(qrcType),
-      expDt: req.partner.qr_exp_dt ?? 15,
-      localExpDt: req.partner.qr_local_exp_dt ?? 900,
-      subscriptionPurpose: req.body?.subscriptionPurpose || null,
-      subscriptionServiceId: req.body?.subscriptionServiceId || null,
-      subscriptionServiceName: req.body?.subscriptionServiceName || null,
-      clientPhone: req.body?.clientPhone || null,
-      clientPam: req.body?.clientPam || null,
+      projectId: req.body?.projectId || terminalSelection.assignment.project_id || null,
+      terminalId: terminalSelection.assignment.partner_terminal_id,
+      orderId: partnerOrderId.value,
+      paymentPurpose: normalized.paymentPurpose,
+      webhookUrl: rawWebhookUrl || null,
+      redirectUrl: normalized.redirectUrl,
+      qrcType: normalized.qrcType,
+      expDt: normalized.expDt,
+      localExpDt: normalized.localExpDt,
+      subscriptionPurpose: normalized.subscriptionPurpose,
+      subscriptionServiceId: normalized.subscriptionServiceId,
+      subscriptionServiceName: normalized.subscriptionServiceName,
+      clientPhone: normalized.clientPhone,
+      clientPam: normalized.clientPam,
       commissionPercent: req.partner.commission_percent ?? null,
+      preselectedAssignment: terminalSelection.assignment,
+      preselectedRuntime: runtime,
       legacy: { endpoint: '/qr' },
     };
 
     const result = await createPaymentCore(input);
-    let bankResponse;
+    const providerInput = {
+      ...input,
+      paymentPurpose: resolveBankPaymentPurpose({
+        originalPurpose: normalized.paymentPurpose,
+        paymentId: result.payment.id,
+        clientPhone: normalized.clientPhone,
+        useClientPhone: req.partner.purpose_use_client_phone,
+        useTransactionId: req.partner.purpose_use_transaction_id,
+      }),
+    };
 
+    let bankResponse;
     try {
-      bankResponse = await executeQrPayment({ payment: result.payment, runtime: result.runtime, input });
+      bankResponse = await executeQrPayment({
+        payment: result.payment,
+        runtime: result.runtime,
+        input: providerInput,
+      });
       const expiresAt = bankResponse.expDt
         ? new Date(Date.now() + Number(bankResponse.expDt) * 60_000).toISOString()
         : null;
 
       await setPaymentProviderResult(result.payment.payment_pk, {
         status: 'pending',
-        providerCode: result.runtime.providerConfig?.provider_code || null,
+        providerCode: result.runtime.providerCode || null,
         providerOrderId: bankResponse.bankOrderId || null,
         qrcId: bankResponse.qrcId || null,
         qrPayload: bankResponse.payload || null,
@@ -91,12 +168,12 @@ router.post('/', partnerApiAuth(), async (req, res, next) => {
       orderId: result.payment.partner_order_id || null,
       qrcId: bankResponse.qrcId || null,
       payload: bankResponse.payload || null,
-      qrcType: bankResponse.qrcType || String(qrcType),
+      qrcType: bankResponse.qrcType || normalized.qrcType,
       regTime: bankResponse.regTime || null,
-      expDt: bankResponse.expDt ?? input.expDt ?? null,
-      localExpDt: bankResponse.localExpDt ?? input.localExpDt ?? null,
-      redirectUrl: input.redirectUrl || null,
-      amount: Number(amount),
+      expDt: bankResponse.expDt ?? (normalized.qrcType === '02' ? normalized.expDt : null),
+      localExpDt: bankResponse.localExpDt ?? (normalized.qrcType === '02' ? normalized.localExpDt : null),
+      redirectUrl: normalized.redirectUrl || null,
+      amount: normalized.amountMinor,
       accountCurrency: result.payment.account_currency || 'RUB',
       amountCurrencyMinor: Number(result.payment.amount_currency_minor),
       effectiveCurrencyRateRub: Number(result.payment.effective_currency_rate_rub_snapshot || 1),
@@ -104,7 +181,12 @@ router.post('/', partnerApiAuth(), async (req, res, next) => {
     });
   } catch (error) {
     if (error.statusCode && error.code) {
-      return res.status(error.statusCode).json({ success: false, error: error.code, message: error.message });
+      return res.status(error.statusCode).json({
+        success: false,
+        error: error.code,
+        message: error.message,
+        ...(error.details ? { details: error.details } : {}),
+      });
     }
     return next(error);
   }
