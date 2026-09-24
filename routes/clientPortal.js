@@ -27,7 +27,7 @@ const {
 } = require('../lib/paymentCore');
 const { executeQrPayment } = require('../lib/providerQr');
 const { refundPayment } = require('../lib/refundService');
-const { previewPartnerPayout } = require('../lib/payoutService');
+const { previewPartnerPayout, scopePayoutSummaryToProject } = require('../lib/payoutService');
 
 const router = express.Router();
 
@@ -586,7 +586,8 @@ router.post('/change-email/confirm',async(req,res,next)=>{
 
 router.get('/payout-summary',async(req,res,next)=>{
   try{
-    const summary=await previewPartnerPayout(req.partner.id,req.query.date?String(req.query.date):null);
+    let summary=await previewPartnerPayout(req.partner.id,req.query.date?String(req.query.date):null);
+    if(req.query.projectId) summary=scopePayoutSummaryToProject(summary,String(req.query.projectId));
     return res.json({success:true,summary});
   }catch(error){next(error);}
 });
