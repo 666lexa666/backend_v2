@@ -9,6 +9,7 @@ const {
   loadTerminalRuntime,
 } = require('../lib/paymentCore');
 const { executeQrPayment } = require('../lib/providerQr');
+const { isSandboxPartner,createSandboxPayment,getSandboxPayment,sandboxQrCreateResponse,sandboxV1StatusResponse }=require('../lib/sandboxPaymentService');
 const {
   normalizePartnerOrderId,
   normalizeUrlValue,
@@ -120,6 +121,15 @@ router.post('/', partnerApiAuth(), async (req, res, next) => {
       legacy: { endpoint: '/qr' },
     };
 
+    if (isSandboxPartner(req.partner)) {
+      const sandbox = await createSandboxPayment({
+        partner:req.partner,
+        input,
+        runtime,
+      });
+      return res.status(200).json(sandboxQrCreateResponse(sandbox,input));
+    }
+
     const result = await createPaymentCore(input);
     const providerInput = {
       ...input,
@@ -196,6 +206,12 @@ router.get('/:paymentId/status', partnerApiAuth(), async (req, res, next) => {
   try {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(req.params.paymentId))) {
       return res.status(400).json({ success: false, error: 'VALIDATION_ERROR', message: 'paymentId должен быть UUID' });
+    }
+
+    if (isSandboxPartner(req.partner)) {
+      const sandbox=await getSandboxPayment(req.partner.id,req.params.paymentId);
+      if(!sandbox) return res.status(404).json({ success:false,error:'PAYMENT_NOT_FOUND',message:'Платеж не найден' });
+      return res.status(200).json(sandboxV1StatusResponse(sandbox));
     }
 
     const payment = await getPartnerPayment(req.partner.id, req.params.paymentId);
