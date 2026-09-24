@@ -95,7 +95,9 @@ router.post('/register', async (req,res,next) => {
     try {
       await sendEmailCode({to:email,code,purpose:'register'});
     } catch(error) {
-      await db.from('partner_registration_requests').delete().eq('email',email).catch(()=>{});
+      try {
+        await db.from('partner_registration_requests').delete().eq('email',email);
+      } catch {}
       throw error;
     }
     return res.json({success:true,message:'Код подтверждения отправлен на email'});
