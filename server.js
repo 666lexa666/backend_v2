@@ -32,6 +32,7 @@ app.use('/currency-rate', require('./routes/partnerCurrencyRate'));
 app.use('/checkout', require('./routes/partnerCheckoutLegacy'));
 app.use('/v2', require('./routes/partnerApiV2'));
 app.use('/v2', require('./routes/partnerRefundV2'));
+app.use('/sandbox', require('./routes/partnerSandbox'));
 // /balance is intentionally removed in V2.
 
 app.use('/admin', require('./routes/adminAuth'));
