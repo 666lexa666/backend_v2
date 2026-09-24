@@ -1,27 +1,127 @@
 const express=require('express');
 const { partnerApiAuth }=require('../lib/partnerApiAuth');
-const { createPaymentCore,getPartnerPayment,setPaymentProviderResult,markPaymentFailed }=require('../lib/paymentCore');
+const { getSupabaseAdminClient }=require('../lib/supabase');
+const {
+  createPaymentCore,
+  getPartnerPayment,
+  setPaymentProviderResult,
+  markPaymentFailed,
+  loadTerminalRuntime,
+}=require('../lib/paymentCore');
 const { executeCardPayment }=require('../lib/providerCard');
+const { findBankById }=require('../lib/legacyBankAdapter');
+const {
+  normalizePartnerOrderId,
+  normalizeUrlValue,
+  resolveQrRedirectUrl,
+  isAsciiHttpUrl,
+  resolveLegacyTerminalAssignment,
+}=require('../lib/legacyPartnerCompatibility');
 
 const router=express.Router();
 
 router.post('/',partnerApiAuth(),async(req,res,next)=>{
   try{
+    const db=getSupabaseAdminClient();
     const amount=req.body?.amount;
     const paymentPurpose=String(req.body?.paymentPurpose || req.body?.description || '').trim();
-    const webhookUrl=req.body?.webhookUrl==null?'':String(req.body.webhookUrl).trim();
-    const redirectUrl=req.body?.redirectUrl || req.partner.redirect_url || null;
-    const orderId=req.body?.orderId==null?null:String(req.body.orderId).trim();
-    const errors=[];
+    const rawWebhookUrl=normalizeUrlValue(req.body?.webhookUrl);
+    const redirectUrl=resolveQrRedirectUrl(req.body?.redirectUrl,req.partner.redirect_url);
+    const partnerOrderId=normalizePartnerOrderId(req.body?.orderId);
+    const requestErrors=[];
 
-    if(!/^\d{1,12}$/.test(String(amount??'')) || Number(amount)<=0) errors.push('amount должен быть целым числом в копейках от 1 до 12 цифр');
-    if(!paymentPurpose) errors.push('paymentPurpose обязателен');
-    if(paymentPurpose.length>140) errors.push('paymentPurpose не должен быть длиннее 140 символов');
-    if(webhookUrl && !isAsciiHttpUrl(webhookUrl)) errors.push('webhookUrl должен быть корректным HTTP(S) URL длиной не более 2048 символов');
-    if(redirectUrl && !isAsciiHttpUrl(redirectUrl)) errors.push('redirectUrl должен быть корректным ASCII HTTP(S) URL длиной не более 1024 символов');
-    if(errors.length) return res.status(400).json({
-      success:false,error:'VALIDATION_ERROR',message:'Некорректные параметры карточного платежа',details:errors,
+    if(partnerOrderId.error) requestErrors.push(partnerOrderId.error);
+    if(!/^\d{1,12}$/.test(String(amount??'')) || Number(amount)<=0){
+      requestErrors.push('amount должен быть целым числом в копейках от 1 до 12 цифр');
+    }
+    if(!paymentPurpose) requestErrors.push('paymentPurpose обязателен');
+    if(paymentPurpose.length>140) requestErrors.push('paymentPurpose не должен быть длиннее 140 символов');
+    if(rawWebhookUrl && (rawWebhookUrl.length>2048 || !isAsciiHttpUrl(rawWebhookUrl))){
+      requestErrors.push('webhookUrl должен быть корректным HTTP(S) URL длиной не более 2048 символов');
+    }
+    if(redirectUrl && (redirectUrl.length>1024 || !isAsciiHttpUrl(redirectUrl))){
+      requestErrors.push('redirectUrl должен быть корректным ASCII HTTP(S) URL длиной не более 1024 символов');
+    }
+    if(requestErrors.length){
+      return res.status(400).json({
+        success:false,
+        error:'VALIDATION_ERROR',
+        message:'Некорректные параметры карточного платежа',
+        details:requestErrors,
+      });
+    }
+
+    const selection=await resolveLegacyTerminalAssignment({
+      db,
+      partner:req.partner,
+      terminalId:req.body?.terminalId,
+      projectId:req.body?.projectId || null,
+      amountMinor:Number(amount),
+      method:'CARD',
     });
+
+    if(selection.reason==='method_mismatch'){
+      return res.status(400).json({
+        success:false,
+        error:'TERMINAL_PAYMENT_METHOD_MISMATCH',
+        message:'Выбранный терминал не поддерживает карточные платежи',
+      });
+    }
+
+    if(!selection.assignment){
+      return res.status(400).json({
+        success:false,
+        error:'CARD_TERMINAL_NOT_FOUND',
+        message:selection.effectiveTerminalId
+          ? 'terminalId не найден, не принадлежит партнёру или выключен'
+          : (req.partner.terminal_auto_distribution_enabled
+            ? 'Сумма не подходит под лимиты ни одного активного карточного терминала, участвующего в автораспределении'
+            : 'У партнёра не настроен активный карточный терминал по умолчанию'),
+      });
+    }
+
+    const min=selection.assignment.effective_min_amount_minor==null
+      ? null:Number(selection.assignment.effective_min_amount_minor);
+    const max=selection.assignment.effective_max_amount_minor==null
+      ? null:Number(selection.assignment.effective_max_amount_minor);
+    if(min!==null && Number(amount)<min){
+      return amountLimitError(res,`Сумма меньше минимально допустимой: ${(min/100).toFixed(2)} ₽`);
+    }
+    if(max!==null && Number(amount)>max){
+      return amountLimitError(res,`Сумма больше максимально допустимой: ${(max/100).toFixed(2)} ₽`);
+    }
+
+    const runtime=await loadTerminalRuntime(selection.assignment);
+    const bank=await findBankById(runtime?.bankId,db);
+    if(!bank){
+      return res.status(500).json({
+        success:false,
+        error:'BANK_NOT_CONFIGURED',
+        message:'Для терминала не настроен банк',
+      });
+    }
+    if(bank.provider_code!=='ingo'){
+      return res.status(400).json({
+        success:false,
+        error:'CARD_BANK_NOT_SUPPORTED',
+        message:'Карточная оплата недоступна на выбранном терминале',
+      });
+    }
+
+    const cfg=runtime?.providerConfig || {};
+    const terminalErrors=[];
+    if(!cfg.ingo_merchant_login) terminalErrors.push('Merchant Login обязателен');
+    if(!cfg.ingo_api_username) terminalErrors.push('API логин обязателен');
+    if(!cfg.ingo_api_password) terminalErrors.push('API пароль обязателен');
+    if(!cfg.ingo_callback_token) terminalErrors.push('Callback token обязателен');
+    if(terminalErrors.length){
+      return res.status(400).json({
+        success:false,
+        error:'TERMINAL_NOT_CONFIGURED',
+        message:'Карточный терминал настроен не полностью',
+        details:terminalErrors,
+      });
+    }
 
     const input={
       apiVersion:'v1',
@@ -31,51 +131,39 @@ router.post('/',partnerApiAuth(),async(req,res,next)=>{
       accountCurrency:req.partner.account_currency || 'RUB',
       currencyMarkupPercent:req.partner.currency_markup_percent || 0,
       method:'CARD',
-      projectId:req.body?.projectId || null,
-      terminalId:req.body?.terminalId || null,
-      orderId,
+      projectId:req.body?.projectId || selection.assignment.project_id || null,
+      terminalId:selection.assignment.partner_terminal_id,
+      orderId:partnerOrderId.value,
       paymentPurpose,
-      webhookUrl:webhookUrl || null,
+      webhookUrl:rawWebhookUrl || null,
       redirectUrl,
       commissionPercent:req.partner.commission_percent ?? null,
+      preselectedAssignment:selection.assignment,
+      preselectedRuntime:runtime,
       legacy:{endpoint:'/card'},
     };
 
-    let result;
-    try{
-      result=await createPaymentCore(input);
-    }catch(error){
-      if(error.code==='TERMINAL_NOT_AVAILABLE'){
-        return res.status(400).json({
-          success:false,
-          error:'CARD_TERMINAL_NOT_FOUND',
-          message:req.body?.terminalId
-            ? 'terminalId не найден, не принадлежит партнёру или выключен'
-            : (req.partner.terminal_auto_distribution_enabled
-              ? 'Сумма не подходит под лимиты ни одного активного карточного терминала, участвующего в автораспределении'
-              : 'У партнёра не настроен активный карточный терминал по умолчанию'),
-        });
-      }
-      throw error;
-    }
+    const result=await createPaymentCore(input);
+    const providerInput={
+      ...input,
+      paymentPurpose:req.partner.purpose_use_transaction_id
+        ? String(result.payment.id)
+        : paymentPurpose,
+    };
 
     let bankResponse;
     try{
-      bankResponse=await executeCardPayment({payment:result.payment,runtime:result.runtime,input});
+      bankResponse=await executeCardPayment({
+        payment:result.payment,
+        runtime:result.runtime,
+        input:providerInput,
+      });
       await setPaymentProviderResult(result.payment.payment_pk,{
         status:'pending',
         providerOrderId:bankResponse.bankOrderId,
       });
     }catch(error){
       await markPaymentFailed(result.payment.payment_pk,error).catch(()=>{});
-      if(error.code==='CARD_BANK_NOT_SUPPORTED'){
-        return res.status(400).json({success:false,error:'CARD_BANK_NOT_SUPPORTED',message:'Карточная оплата недоступна на выбранном терминале'});
-      }
-      if(error.code==='TERMINAL_NOT_CONFIGURED'){
-        return res.status(400).json({
-          success:false,error:'TERMINAL_NOT_CONFIGURED',message:'Карточный терминал настроен не полностью',details:error.details || [],
-        });
-      }
       return res.status(502).json({
         success:false,
         error:'BANK_CARD_REGISTER_FAILED',
@@ -100,6 +188,14 @@ router.post('/',partnerApiAuth(),async(req,res,next)=>{
       status:'pending',
     });
   }catch(error){
+    if(error.statusCode && error.code){
+      return res.status(error.statusCode).json({
+        success:false,
+        error:error.code,
+        message:error.message,
+        ...(error.details?{details:error.details}:{}),
+      });
+    }
     return next(error);
   }
 });
@@ -162,12 +258,13 @@ function legacyPaymentStatus(payment,lastRefund){
   return status;
 }
 
-function isAsciiHttpUrl(value){
-  if(String(value).length>2048 || !/^[\x00-\x7F]+$/.test(String(value))) return false;
-  try{
-    const url=new URL(String(value));
-    return url.protocol==='http:' || url.protocol==='https:';
-  }catch{return false;}
+function amountLimitError(res,detail){
+  return res.status(400).json({
+    success:false,
+    error:'VALIDATION_ERROR',
+    message:'Сумма не соответствует лимитам карточного терминала',
+    details:[detail],
+  });
 }
 
 module.exports=router;
