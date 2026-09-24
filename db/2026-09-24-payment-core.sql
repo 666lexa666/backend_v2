@@ -80,7 +80,9 @@ begin
   values(
     gen_random_uuid(),gen_random_uuid(),p_partner_id,p_project_id,p_partner_terminal_id,p_bank_id,
     upper(p_payment_type),p_qrc_type,p_partner_order_id,p_amount_minor,
-    upper(coalesce(p_currency,'RUB'))::char(3),p_status,p_commission_percent,p_currency_rate_rub,
+    upper(coalesce(p_currency,'RUB'))::char(3),p_status,
+    coalesce(p_commission_percent,0),
+    coalesce(p_currency_rate_rub,1),
     coalesce(p_metadata,'{}'::jsonb)
   )
   returning * into v_payment;
