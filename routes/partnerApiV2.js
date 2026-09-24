@@ -3,6 +3,8 @@ const { partnerApiAuth } = require('../lib/partnerApiAuth');
 const { createPaymentCore, getPartnerPayment, setPaymentProviderResult, markPaymentFailed } = require('../lib/paymentCore');
 const { executeQrPayment } = require('../lib/providerQr');
 const { executeCardPayment } = require('../lib/providerCard');
+const { selectTerminalForPayment,loadTerminalRuntime } = require('../lib/paymentCore');
+const { isSandboxPartner,createSandboxPayment,getSandboxPayment }=require('../lib/sandboxPaymentService');
 const { findSubscriptionInstrument, chargeSbpSubscription } = require('../lib/subscriptionService');
 
 const router = express.Router();
@@ -41,6 +43,45 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
       localExpDt: req.partner.qr_local_exp_dt ?? 900,
       commissionPercent: req.partner.commission_percent ?? null,
     };
+
+    if(isSandboxPartner(req.partner)){
+      const assignment=await selectTerminalForPayment({
+        partnerId:req.partner.id,
+        projectId:input.projectId,
+        terminalId:input.terminalId,
+        method,
+        amountMinor:amount,
+      });
+      if(!assignment){
+        return res.status(400).json({success:false,error:'TERMINAL_NOT_AVAILABLE',message:'Подходящий активный терминал не найден'});
+      }
+      const runtime=await loadTerminalRuntime(assignment);
+      const sandbox=await createSandboxPayment({
+        partner:req.partner,
+        input:{...input,projectId:input.projectId || assignment.project_id,terminalId:assignment.partner_terminal_id},
+        runtime,
+      });
+      return res.status(201).json({
+        success:true,
+        payment:{
+          id:sandbox.data.id,
+          requestId:sandbox.data.requestId,
+          status:sandbox.data.status,
+          method:sandbox.data.paymentType,
+          amount:Number(sandbox.data.amountMinor),
+          currency:'RUB',
+          accountCurrency:sandbox.data.accountCurrency,
+          amountCurrencyMinor:Number(sandbox.data.amountCurrencyMinor),
+          effectiveCurrencyRateRub:Number(sandbox.data.effectiveCurrencyRateRubSnapshot || 1),
+          projectId:sandbox.data.projectId,
+          terminalId:sandbox.data.partnerTerminalId,
+          orderId:sandbox.data.partnerOrderId,
+          qr:method==='SBP'?{id:sandbox.data.qrcId,payload:sandbox.data.qrPayload}:null,
+          card:method==='CARD'?{bankOrderId:sandbox.data.bankOrderId,formUrl:sandbox.data.formUrl}:null,
+          createdAt:sandbox.data.createdAt,
+        },
+      });
+    }
 
     const result = await createPaymentCore(input);
     let providerResponse = null;
@@ -114,6 +155,27 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
 
 router.get('/payments/:id', partnerApiAuth(), async (req, res, next) => {
   try {
+    if(isSandboxPartner(req.partner)){
+      const sandbox=await getSandboxPayment(req.partner.id,req.params.id);
+      if(!sandbox) return res.status(404).json({success:false,error:'PAYMENT_NOT_FOUND',message:'Платеж не найден'});
+      const p=sandbox.data;
+      return res.json({
+        success:true,
+        payment:{
+          id:p.id,requestId:p.requestId,status:p.status,method:p.paymentType,
+          amount:Number(p.amountMinor),currency:'RUB',accountCurrency:p.accountCurrency,
+          amountCurrencyMinor:Number(p.amountCurrencyMinor),
+          effectiveCurrencyRateRub:Number(p.effectiveCurrencyRateRubSnapshot || 1),
+          projectId:p.projectId,terminalId:p.partnerTerminalId,orderId:p.partnerOrderId,
+          qrcId:p.qrcId || null,providerPaymentId:p.providerTransactionId || null,
+          paidAt:p.paidAt || null,expiresAt:p.expiresAt || null,createdAt:p.createdAt,updatedAt:p.updatedAt,
+          qr:p.paymentType==='SBP'?{id:p.qrcId,payload:p.qrPayload}:null,
+          card:p.paymentType==='CARD'?{bankOrderId:p.bankOrderId,formUrl:p.formUrl}:null,
+          refunds:p.refund?[{id:p.refund.refundRefId,amount:Number(p.refund.amountMinor),status:p.refund.status,completedAt:p.refund.completedAt}]:[],
+        },
+      });
+    }
+
     const payment = await getPartnerPayment(req.partner.id, req.params.id);
     if (!payment) return res.status(404).json({ success: false, error: 'PAYMENT_NOT_FOUND', message: 'Платеж не найден' });
 
