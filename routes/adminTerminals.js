@@ -2,6 +2,10 @@ const express = require('express');
 const { auth } = require('../lib/auth');
 const {
   listAdminCatalog,
+  getAdminCatalog,
+  listCatalogAssignments,
+  setCatalogAssignmentActive,
+  getTerminalMonthlyTotals,
   createCatalog,
   updateCatalog,
   setCatalogArchived,
@@ -16,7 +20,43 @@ router.use(auth({ admin: true }));
 
 router.get('/terminals', async (req, res, next) => {
   try {
-    res.json({ success: true, terminals: await listAdminCatalog(), monthly_totals_available: false });
+    res.json({ success: true, terminals: await listAdminCatalog(), monthly_totals_available: true });
+  } catch (error) { next(error); }
+});
+
+router.get('/terminals/monthly-totals', async (req, res, next) => {
+  try {
+    res.json({ success: true, available: true, totals: await getTerminalMonthlyTotals() });
+  } catch (error) { next(error); }
+});
+
+router.get('/terminals/:terminalId/assignments', async (req, res, next) => {
+  try {
+    const terminalId = String(req.params.terminalId);
+    const terminal = await getAdminCatalog(terminalId);
+    const assignments = await listCatalogAssignments(terminalId);
+    res.json({ success: true, terminal, assignments });
+  } catch (error) { next(error); }
+});
+
+router.patch('/terminals/:terminalId/assignments/:assignmentId', async (req, res, next) => {
+  try {
+    const isActive = req.body?.isActive ?? req.body?.is_active;
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'VALIDATION_ERROR', message: 'isActive должен быть boolean' });
+    }
+    const assignment = await setCatalogAssignmentActive(
+      String(req.params.terminalId),
+      String(req.params.assignmentId),
+      isActive,
+    );
+    res.json({ success: true, assignment });
+  } catch (error) { next(error); }
+});
+
+router.get('/terminals/:terminalId', async (req, res, next) => {
+  try {
+    res.json({ success: true, terminal: await getAdminCatalog(String(req.params.terminalId)) });
   } catch (error) { next(error); }
 });
 
