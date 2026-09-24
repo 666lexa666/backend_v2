@@ -21,8 +21,10 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Public partner-facing V1-compatible API.
+// Public Partner API: V1 compatibility + new V2 contract.
+app.use('/qr', require('./routes/partnerQrLegacy'));
 app.use('/currency-rate', require('./routes/partnerCurrencyRate'));
+app.use('/v2', require('./routes/partnerApiV2'));
 // /balance is intentionally removed in V2.
 
 // Internal V2 APIs for the cabinet/admin frontend.
