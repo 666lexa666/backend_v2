@@ -4,7 +4,7 @@ const { getSupabaseAdminClient } = require('../lib/supabase');
 const { refundPayment } = require('../lib/refundService');
 const { hydrateLegacyPartner } = require('../lib/partnerApiAuth');
 const { enqueuePartnerWebhook } = require('../lib/partnerWebhookOutbox');
-const { previewAllPartnerPayouts } = require('../lib/payoutService');
+const { previewPartnerPayout, previewAllPartnerPayouts, scopePayoutSummaryToProject } = require('../lib/payoutService');
 
 const router = express.Router();
 router.use(auth({ admin: true }));
@@ -372,7 +372,25 @@ router.get('/stats/export',async(req,res,next)=>{
 
 router.get('/payout-summary',async(req,res,next)=>{
   try{
-    const summary=await previewAllPartnerPayouts(req.query.date?String(req.query.date):null);
+    const date=req.query.date?String(req.query.date):null;
+    const rawPartnerId=req.query.partnerId;
+    const projectId=req.query.projectId?String(req.query.projectId):null;
+    let summary;
+
+    if(rawPartnerId!==undefined && rawPartnerId!==null && String(rawPartnerId).trim()!==''){
+      const partnerId=Number(rawPartnerId);
+      if(!Number.isSafeInteger(partnerId) || partnerId<=0){
+        return res.status(400).json({success:false,error:'VALIDATION_ERROR',message:'Некорректный partnerId'});
+      }
+      summary=await previewPartnerPayout(partnerId,date);
+      if(projectId) summary=scopePayoutSummaryToProject(summary,projectId);
+    }else{
+      if(projectId){
+        return res.status(400).json({success:false,error:'VALIDATION_ERROR',message:'projectId требует partnerId'});
+      }
+      summary=await previewAllPartnerPayouts(date);
+    }
+
     return res.json({success:true,summary});
   }catch(error){next(error);}
 });
