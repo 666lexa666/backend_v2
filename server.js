@@ -23,6 +23,7 @@ app.get('/health', (req, res) => {
 
 app.use('/webhook', require('./routes/bankWebhook'));
 app.use('/webhook-dolinsk', require('./routes/bankWebhookDolinsk'));
+app.use('/application', require('./routes/application'));
 
 app.use('/qr', require('./routes/partnerQrLegacy'));
 app.use('/card', require('./routes/partnerCardLegacy'));
