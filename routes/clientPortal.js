@@ -375,7 +375,9 @@ router.post('/qr',async(req,res,next)=>{
       apiVersion:'client-v2',
       partnerId:partner.id,
       amountMinor,
-      currency:partner.account_currency || 'RUB',
+      transactionCurrency:'RUB',
+      accountCurrency:partner.account_currency || 'RUB',
+      currencyMarkupPercent:partner.currency_markup_percent || 0,
       method:'SBP',
       projectId:req.body?.projectId || null,
       terminalId:req.body?.terminalId || null,
@@ -392,7 +394,6 @@ router.post('/qr',async(req,res,next)=>{
       clientPhone:req.body?.clientPhone || null,
       clientPam:req.body?.clientPam || null,
       commissionPercent:partner.commission_percent ?? 0,
-      currencyRateRub:partner.latest_currency_rate_rub || 1,
     };
     const result=await createPaymentCore(input);
     let bankResponse;
@@ -422,10 +423,10 @@ router.post('/qr',async(req,res,next)=>{
       localExpDt:bankResponse.localExpDt ?? input.localExpDt,
       redirectUrl:input.redirectUrl,
       amount:amountMinor,
-      accountCurrency:partner.account_currency || 'RUB',
-      amountCurrencyMinor:amountMinor,
-      effectiveCurrencyRateRub:partner.latest_currency_rate_rub || 1,
-      currencyMarkupPercent:partner.currency_markup_percent || 0,
+      accountCurrency:result.payment.account_currency || 'RUB',
+      amountCurrencyMinor:Number(result.payment.amount_currency_minor),
+      effectiveCurrencyRateRub:Number(result.payment.effective_currency_rate_rub_snapshot || 1),
+      currencyMarkupPercent:Number(result.payment.currency_markup_percent_snapshot || 0),
     });
   }catch(error){next(error);}
 });
