@@ -11,12 +11,14 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
   try {
     const method = String(req.body?.method || 'SBP').toUpperCase();
     const amount = Number(req.body?.amount);
+    const currency = String(req.body?.currency || 'RUB').trim().toUpperCase();
     const orderId = req.body?.orderId == null ? null : String(req.body.orderId).trim();
     const paymentPurpose = String(req.body?.description ?? req.body?.paymentPurpose ?? '').trim();
 
     const errors = [];
     if (!Number.isSafeInteger(amount) || amount <= 0) errors.push('amount должен быть положительным целым числом в копейках');
     if (!['SBP', 'CARD'].includes(method)) errors.push('method должен быть SBP или CARD');
+    if (currency !== 'RUB') errors.push('currency должен быть RUB');
     if (!paymentPurpose) errors.push('description обязателен');
     if (errors.length) return res.status(400).json({ success: false, error: 'VALIDATION_ERROR', details: errors });
 
@@ -24,7 +26,9 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
       apiVersion: 'v2',
       partnerId: req.partner.id,
       amountMinor: amount,
-      currency: req.body?.currency || req.partner.account_currency || 'RUB',
+      transactionCurrency: currency,
+      accountCurrency: req.partner.account_currency || 'RUB',
+      currencyMarkupPercent: req.partner.currency_markup_percent || 0,
       method,
       projectId: req.body?.projectId || null,
       terminalId: req.body?.terminalId || null,
@@ -36,7 +40,6 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
       expDt: req.partner.qr_exp_dt ?? 15,
       localExpDt: req.partner.qr_local_exp_dt ?? 900,
       commissionPercent: req.partner.commission_percent ?? null,
-      currencyRateRub: req.partner.latest_currency_rate_rub || 1,
     };
 
     const result = await createPaymentCore(input);
@@ -79,6 +82,9 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
         method: result.payment.payment_type,
         amount: Number(result.payment.amount_minor),
         currency: result.payment.currency,
+        accountCurrency: result.payment.account_currency,
+        amountCurrencyMinor: Number(result.payment.amount_currency_minor),
+        effectiveCurrencyRateRub: Number(result.payment.effective_currency_rate_rub_snapshot || 1),
         projectId: result.payment.project_id,
         terminalId: result.payment.partner_terminal_id,
         orderId: result.payment.partner_order_id,
@@ -123,6 +129,9 @@ router.get('/payments/:id', partnerApiAuth(), async (req, res, next) => {
         method: payment.payment_type,
         amount: Number(payment.amount_minor),
         currency: payment.currency,
+        accountCurrency: payment.account_currency,
+        amountCurrencyMinor: Number(payment.amount_currency_minor),
+        effectiveCurrencyRateRub: Number(payment.effective_currency_rate_rub_snapshot || 1),
         projectId: payment.project_id,
         terminalId: payment.partner_terminal_id,
         orderId: payment.partner_order_id,
