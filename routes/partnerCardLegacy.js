@@ -124,7 +124,7 @@ router.get('/:paymentId/status',partnerApiAuth(),async(req,res,next)=>{
       orderId:payment.partner_order_id || null,
       terminalId:payment.partner_terminal_id || null,
       bankOrderId:provider.provider_order_id || null,
-      status:payment.status,
+      status:legacyPaymentStatus(payment,lastRefund),
       paymentType:'CARD',
       paymentPurpose:meta.paymentPurpose || null,
       amount:Number(payment.amount_minor),
@@ -145,6 +145,21 @@ router.get('/:paymentId/status',partnerApiAuth(),async(req,res,next)=>{
 router.all('/',(req,res)=>res.status(405).json({
   success:false,error:'METHOD_NOT_ALLOWED',message:'Разрешён только POST запрос',
 }));
+
+function legacyPaymentStatus(payment,lastRefund){
+  if(lastRefund){
+    const s=String(lastRefund.status || '').toLowerCase();
+    if(s==='requested') return 'refund_requested';
+    if(s==='processing') return 'refund_processing';
+    if(s==='confirmed') return 'refund_confirmed';
+    if(s==='refused') return 'refund_refused';
+    if(s==='failed') return 'refund_failed';
+    if(s==='cancelled') return 'refund_refused';
+  }
+  const status=String(payment?.status || '');
+  if(status==='creating') return 'creating_qr';
+  return status;
+}
 
 function isAsciiHttpUrl(value){
   if(String(value).length>2048 || !/^[\x00-\x7F]+$/.test(String(value))) return false;
