@@ -5,8 +5,10 @@
   "description": "Isolated WHITECAPITAL V2 API for the dedicated WHITECAPITAL Supabase project",
   "main": "server.js",
   "scripts": {
+    "prestart": "npm test",
     "start": "node server.js",
     "test": "node --test test/*.test.js",
+    "preworker:webhooks": "npm test",
     "worker:webhooks": "node workers/partnerWebhookWorker.js"
   },
   "dependencies": {
