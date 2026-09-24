@@ -9,6 +9,7 @@ const {
   loadTerminalRuntime,
 }=require('../lib/paymentCore');
 const { executeCardPayment }=require('../lib/providerCard');
+const { isSandboxPartner,createSandboxPayment,getSandboxPayment,sandboxV1StatusResponse }=require('../lib/sandboxPaymentService');
 const { findBankById }=require('../lib/legacyBankAdapter');
 const {
   normalizePartnerOrderId,
@@ -92,6 +93,40 @@ router.post('/',partnerApiAuth(),async(req,res,next)=>{
     }
 
     const runtime=await loadTerminalRuntime(selection.assignment);
+    if(isSandboxPartner(req.partner)){
+      const input={
+        apiVersion:'v1',
+        partnerId:req.partner.id,
+        amountMinor:Number(amount),
+        transactionCurrency:'RUB',
+        accountCurrency:req.partner.account_currency || 'RUB',
+        currencyMarkupPercent:req.partner.currency_markup_percent || 0,
+        method:'CARD',
+        projectId:req.body?.projectId || selection.assignment.project_id || null,
+        terminalId:selection.assignment.partner_terminal_id,
+        orderId:partnerOrderId.value,
+        paymentPurpose,
+        webhookUrl:rawWebhookUrl || null,
+        redirectUrl,
+        commissionPercent:req.partner.commission_percent ?? null,
+      };
+      const sandbox=await createSandboxPayment({partner:req.partner,input,runtime});
+      return res.status(200).json({
+        success:true,
+        paymentId:sandbox.data.id,
+        orderId:sandbox.data.partnerOrderId || null,
+        terminalId:sandbox.data.partnerTerminalId || null,
+        bankOrderId:sandbox.data.bankOrderId,
+        formUrl:sandbox.data.formUrl,
+        redirectUrl:sandbox.data.redirectUrl || null,
+        amount:Number(sandbox.data.amountMinor),
+        accountCurrency:sandbox.data.accountCurrency || 'RUB',
+        amountCurrencyMinor:Number(sandbox.data.amountCurrencyMinor),
+        effectiveCurrencyRateRub:Number(sandbox.data.effectiveCurrencyRateRubSnapshot || 1),
+        status:'pending',
+      });
+    }
+
     const bank=await findBankById(runtime?.bankId,db);
     if(!bank){
       return res.status(500).json({
@@ -206,6 +241,19 @@ router.get('/:paymentId/status',partnerApiAuth(),async(req,res,next)=>{
     if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)){
       return res.status(400).json({success:false,error:'VALIDATION_ERROR',message:'paymentId должен быть UUID'});
     }
+    if(isSandboxPartner(req.partner)){
+      const sandbox=await getSandboxPayment(req.partner.id,id);
+      if(!sandbox || String(sandbox.data.paymentType).toUpperCase()!=='CARD'){
+        return res.status(404).json({success:false,error:'PAYMENT_NOT_FOUND',message:'Карточный платёж не найден'});
+      }
+      return res.json({
+        ...sandboxV1StatusResponse(sandbox),
+        terminalId:sandbox.data.partnerTerminalId || null,
+        bankOrderId:sandbox.data.bankOrderId || null,
+        paymentType:'CARD',
+      });
+    }
+
     const payment=await getPartnerPayment(req.partner.id,id);
     if(!payment || String(payment.payment_type).toUpperCase()!=='CARD'){
       return res.status(404).json({success:false,error:'PAYMENT_NOT_FOUND',message:'Карточный платёж не найден'});
