@@ -127,7 +127,7 @@ router.get('/:paymentId/status', partnerApiAuth(), async (req, res, next) => {
       success: true,
       paymentId: payment.id,
       orderId: payment.partner_order_id || null,
-      status: payment.status,
+      status: legacyPaymentStatus(payment,lastRefund),
       qrcId: payment.qrc_id || provider.provider_qrc_id || null,
       qrcType: payment.qrc_type || null,
       paymentType: payment.payment_type || null,
@@ -154,5 +154,21 @@ router.all('/', (req, res) => res.status(405).json({
   error: 'METHOD_NOT_ALLOWED',
   message: 'Разрешен только POST запрос',
 }));
+
+function legacyPaymentStatus(payment,lastRefund){
+  if(lastRefund){
+    const s=String(lastRefund.status || '').toLowerCase();
+    if(s==='requested') return 'refund_requested';
+    if(s==='processing') return 'refund_processing';
+    if(s==='confirmed') return 'refund_confirmed';
+    if(s==='refused') return 'refund_refused';
+    if(s==='failed') return 'refund_failed';
+    if(s==='cancelled') return 'refund_refused';
+  }
+  const status=String(payment?.status || '');
+  if(status==='creating') return 'creating_qr';
+  if(payment?.qrc_type==='03' && status==='failed') return 'subscription_failed';
+  return status;
+}
 
 module.exports = router;
