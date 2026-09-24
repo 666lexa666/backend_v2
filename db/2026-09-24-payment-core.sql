@@ -48,6 +48,57 @@ where pt.archived_at is null
 revoke all on public.partner_payment_routes_v2 from anon, authenticated;
 grant select on public.partner_payment_routes_v2 to service_role;
 
+alter table public.payments
+  add column if not exists account_currency char(3) not null default 'RUB',
+  add column if not exists currency_markup_percent_snapshot numeric not null default 0,
+  add column if not exists effective_currency_rate_rub_snapshot numeric not null default 1,
+  add column if not exists amount_currency_minor bigint not null default 0,
+  add column if not exists commission_currency_minor bigint not null default 0,
+  add column if not exists currency_rate_fetched_at_snapshot timestamptz;
+
+alter table public.payment_refunds
+  add column if not exists amount_currency_minor bigint not null default 0;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname='payments_effective_currency_rate_positive'
+  ) then
+    alter table public.payments
+      add constraint payments_effective_currency_rate_positive
+      check (effective_currency_rate_rub_snapshot > 0) not valid;
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname='payments_amount_currency_nonnegative'
+  ) then
+    alter table public.payments
+      add constraint payments_amount_currency_nonnegative
+      check (amount_currency_minor >= 0) not valid;
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname='payments_commission_currency_nonnegative'
+  ) then
+    alter table public.payments
+      add constraint payments_commission_currency_nonnegative
+      check (commission_currency_minor >= 0) not valid;
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint where conname='payment_refunds_amount_currency_nonnegative'
+  ) then
+    alter table public.payment_refunds
+      add constraint payment_refunds_amount_currency_nonnegative
+      check (amount_currency_minor >= 0) not valid;
+  end if;
+end;
+$$;
+
+drop function if exists public.create_payment_v2(
+  bigint,uuid,uuid,bigint,text,text,text,text,bigint,text,text,numeric,numeric,jsonb,jsonb,jsonb
+);
+
 create or replace function public.create_payment_v2(
   p_partner_id bigint,
   p_project_id uuid,
@@ -59,9 +110,14 @@ create or replace function public.create_payment_v2(
   p_partner_order_id text,
   p_amount_minor bigint,
   p_currency text,
+  p_account_currency text,
   p_status text,
   p_commission_percent numeric,
   p_currency_rate_rub numeric,
+  p_currency_markup_percent numeric,
+  p_effective_currency_rate_rub numeric,
+  p_amount_currency_minor bigint,
+  p_currency_rate_fetched_at timestamptz,
   p_metadata jsonb,
   p_terminal_snapshot jsonb,
   p_routing_snapshot jsonb
@@ -73,32 +129,56 @@ set search_path=''
 as $$
 declare
   v_payment public.payments;
+  v_commission_percent numeric := coalesce(p_commission_percent,0);
+  v_amount_currency_minor bigint := coalesce(p_amount_currency_minor,p_amount_minor);
 begin
   insert into public.payments(
-    id,request_id,partner_id,project_id,partner_terminal_id,bank_id,payment_type,qrc_type,
-    partner_order_id,amount_minor,currency,status,commission_percent_snapshot,currency_rate_rub_snapshot,metadata
+    id,request_id,partner_id,project_id,partner_terminal_id,bank_id,
+    payment_type,qrc_type,partner_order_id,
+    amount_minor,currency,account_currency,status,
+    commission_percent_snapshot,commission_minor,commission_currency_minor,
+    currency_rate_rub_snapshot,currency_markup_percent_snapshot,
+    effective_currency_rate_rub_snapshot,amount_currency_minor,
+    currency_rate_fetched_at_snapshot,metadata
   )
   values(
     gen_random_uuid(),gen_random_uuid(),p_partner_id,p_project_id,p_partner_terminal_id,p_bank_id,
-    upper(p_payment_type),p_qrc_type,p_partner_order_id,p_amount_minor,
-    upper(coalesce(p_currency,'RUB'))::char(3),p_status,
-    coalesce(p_commission_percent,0),
+    upper(p_payment_type),p_qrc_type,p_partner_order_id,
+    p_amount_minor,
+    upper(coalesce(p_currency,'RUB'))::char(3),
+    upper(coalesce(p_account_currency,'RUB'))::char(3),
+    p_status,
+    v_commission_percent,
+    round((p_amount_minor::numeric*v_commission_percent)/100)::bigint,
+    round((v_amount_currency_minor::numeric*v_commission_percent)/100)::bigint,
     coalesce(p_currency_rate_rub,1),
+    coalesce(p_currency_markup_percent,0),
+    coalesce(p_effective_currency_rate_rub,1),
+    v_amount_currency_minor,
+    p_currency_rate_fetched_at,
     coalesce(p_metadata,'{}'::jsonb)
   )
   returning * into v_payment;
 
-  insert into public.payment_provider_data(payment_pk,provider_code,terminal_snapshot,routing_snapshot,updated_at)
-  values(v_payment.payment_pk,coalesce(nullif(trim(p_provider_code),''),'unknown'),coalesce(p_terminal_snapshot,'{}'::jsonb),coalesce(p_routing_snapshot,'{}'::jsonb),now());
+  insert into public.payment_provider_data(
+    payment_pk,provider_code,terminal_snapshot,routing_snapshot,updated_at
+  )
+  values(
+    v_payment.payment_pk,
+    coalesce(nullif(trim(p_provider_code),''),'unknown'),
+    coalesce(p_terminal_snapshot,'{}'::jsonb),
+    coalesce(p_routing_snapshot,'{}'::jsonb),
+    now()
+  );
 
   return v_payment;
 end;
 $$;
 
 revoke all on function public.create_payment_v2(
-  bigint,uuid,uuid,bigint,text,text,text,text,bigint,text,text,numeric,numeric,jsonb,jsonb,jsonb
+  bigint,uuid,uuid,bigint,text,text,text,text,bigint,text,text,text,numeric,numeric,numeric,numeric,bigint,timestamptz,jsonb,jsonb,jsonb
 ) from public, anon, authenticated;
 
 grant execute on function public.create_payment_v2(
-  bigint,uuid,uuid,bigint,text,text,text,text,bigint,text,text,numeric,numeric,jsonb,jsonb,jsonb
+  bigint,uuid,uuid,bigint,text,text,text,text,bigint,text,text,text,numeric,numeric,numeric,numeric,bigint,timestamptz,jsonb,jsonb,jsonb
 ) to service_role;
