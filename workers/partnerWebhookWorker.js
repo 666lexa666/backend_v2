@@ -10,6 +10,7 @@ let stopping = false;
 let lastTickAt = null;
 let lastSuccessAt = null;
 let lastError = null;
+let readyLogged = false;
 
 async function tick() {
   lastTickAt = new Date().toISOString();
@@ -21,6 +22,14 @@ async function tick() {
     });
     lastSuccessAt = new Date().toISOString();
     lastError = null;
+    if (!readyLogged) {
+      readyLogged = true;
+      console.log('[partner-webhook-worker:ready]', {
+        workerId,
+        database: 'WHITECAPITAL',
+        claimed: results.length,
+      });
+    }
     if (results.length) {
       console.log('[partner-webhook-worker]', {
         claimed: results.length,
