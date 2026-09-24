@@ -25,9 +25,9 @@ async function getLatestCurrencyRate(client, currency) {
 
   const { data, error } = await client
     .from('currency_rates')
-    .select('currency,rate_rub,source,fetched_at')
-    .eq('currency', currency)
-    .order('fetched_at', { ascending: false })
+    .select('base_currency,quote_currency,rate,source,effective_at')
+    .eq('base_currency', currency)\n    .eq('quote_currency', 'RUB')
+    .order('effective_at', { ascending: false })
     .limit(1)
     .maybeSingle();
 
