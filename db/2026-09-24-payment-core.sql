@@ -53,6 +53,7 @@ create or replace function public.create_payment_v2(
   p_project_id uuid,
   p_partner_terminal_id uuid,
   p_bank_id bigint,
+  p_provider_code text,
   p_payment_type text,
   p_qrc_type text,
   p_partner_order_id text,
@@ -88,16 +89,16 @@ begin
   returning * into v_payment;
 
   insert into public.payment_provider_data(payment_pk,provider_code,terminal_snapshot,routing_snapshot,updated_at)
-  values(v_payment.payment_pk,null,coalesce(p_terminal_snapshot,'{}'::jsonb),coalesce(p_routing_snapshot,'{}'::jsonb),now());
+  values(v_payment.payment_pk,coalesce(nullif(trim(p_provider_code),''),'unknown'),coalesce(p_terminal_snapshot,'{}'::jsonb),coalesce(p_routing_snapshot,'{}'::jsonb),now());
 
   return v_payment;
 end;
 $$;
 
 revoke all on function public.create_payment_v2(
-  bigint,uuid,uuid,bigint,text,text,text,bigint,text,text,numeric,numeric,jsonb,jsonb,jsonb
+  bigint,uuid,uuid,bigint,text,text,text,text,bigint,text,text,numeric,numeric,jsonb,jsonb,jsonb
 ) from public, anon, authenticated;
 
 grant execute on function public.create_payment_v2(
-  bigint,uuid,uuid,bigint,text,text,text,bigint,text,text,numeric,numeric,jsonb,jsonb,jsonb
+  bigint,uuid,uuid,bigint,text,text,text,text,bigint,text,text,numeric,numeric,jsonb,jsonb,jsonb
 ) to service_role;
