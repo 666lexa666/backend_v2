@@ -21,6 +21,11 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Public partner-facing V1-compatible API.
+app.use('/currency-rate', require('./routes/partnerCurrencyRate'));
+// /balance is intentionally removed in V2.
+
+// Internal V2 APIs for the cabinet/admin frontend.
 app.use('/admin', require('./routes/adminAuth'));
 app.use('/admin', require('./routes/adminTerminals'));
 app.use('/admin/payouts', require('./routes/adminPayouts'));
@@ -33,6 +38,14 @@ app.use((req, res) => {
 });
 
 app.use((error, req, res, next) => {
+  if (error instanceof SyntaxError && error.status === 400 && 'body' in error) {
+    return res.status(400).json({
+      success: false,
+      error: 'INVALID_JSON',
+      message: 'Неправильный JSON-запрос',
+    });
+  }
+
   const status = Number(error.statusCode || error.status || 500);
   const safeStatus = status >= 400 && status <= 599 ? status : 500;
 
