@@ -35,7 +35,9 @@ router.post('/', partnerApiAuth(), async (req, res, next) => {
       apiVersion: 'v1',
       partnerId: req.partner.id,
       amountMinor: Number(amount),
-      currency: req.partner.account_currency || 'RUB',
+      transactionCurrency: 'RUB',
+      accountCurrency: req.partner.account_currency || 'RUB',
+      currencyMarkupPercent: req.partner.currency_markup_percent || 0,
       method: 'SBP',
       projectId: req.body?.projectId || null,
       terminalId: req.body?.terminalId || null,
@@ -52,7 +54,6 @@ router.post('/', partnerApiAuth(), async (req, res, next) => {
       clientPhone: req.body?.clientPhone || null,
       clientPam: req.body?.clientPam || null,
       commissionPercent: req.partner.commission_percent ?? null,
-      currencyRateRub: req.partner.latest_currency_rate_rub || 1,
       legacy: { endpoint: '/qr' },
     };
 
@@ -96,10 +97,10 @@ router.post('/', partnerApiAuth(), async (req, res, next) => {
       localExpDt: bankResponse.localExpDt ?? input.localExpDt ?? null,
       redirectUrl: input.redirectUrl || null,
       amount: Number(amount),
-      accountCurrency: req.partner.account_currency || 'RUB',
-      amountCurrencyMinor: Number(amount),
-      effectiveCurrencyRateRub: req.partner.latest_currency_rate_rub || 1,
-      currencyMarkupPercent: req.partner.currency_markup_percent || 0,
+      accountCurrency: result.payment.account_currency || 'RUB',
+      amountCurrencyMinor: Number(result.payment.amount_currency_minor),
+      effectiveCurrencyRateRub: Number(result.payment.effective_currency_rate_rub_snapshot || 1),
+      currencyMarkupPercent: Number(result.payment.currency_markup_percent_snapshot || 0),
     });
   } catch (error) {
     if (error.statusCode && error.code) {
@@ -133,9 +134,9 @@ router.get('/:paymentId/status', partnerApiAuth(), async (req, res, next) => {
       paymentType: payment.payment_type || null,
       paymentPurpose: meta.paymentPurpose || null,
       amount: Number(payment.amount_minor),
-      accountCurrency: payment.currency || 'RUB',
-      amountCurrencyMinor: Number(payment.amount_minor),
-      effectiveCurrencyRateRub: payment.currency_rate_rub_snapshot || null,
+      accountCurrency: payment.account_currency || 'RUB',
+      amountCurrencyMinor: Number(payment.amount_currency_minor),
+      effectiveCurrencyRateRub: payment.effective_currency_rate_rub_snapshot || null,
       createdAt: payment.created_at,
       updatedAt: payment.updated_at,
       paidAt: payment.paid_at || provider.provider_trx_time || null,
