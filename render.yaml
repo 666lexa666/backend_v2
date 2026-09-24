@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: whitecapital-backend-v2
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WC_V2_SUPABASE_URL
+        sync: false
+      - key: WC_V2_SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: WC_V2_ALLOWED_ORIGINS
+        sync: false
+      - key: PUBLIC_API_URL
+        sync: false
+      - key: CLIENT_WEBHOOK_MAX_ATTEMPTS
+        value: "3"
+      - key: CLIENT_WEBHOOK_TIMEOUT_MS
+        value: "10000"
+
+  - type: worker
+    name: whitecapital-webhook-worker-v2
+    runtime: node
+    plan: starter
+    buildCommand: npm ci
+    startCommand: npm run worker:webhooks
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: WC_V2_SUPABASE_URL
+        sync: false
+      - key: WC_V2_SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: PARTNER_WEBHOOK_POLL_INTERVAL_MS
+        value: "2000"
+      - key: PARTNER_WEBHOOK_BATCH_SIZE
+        value: "50"
+      - key: PARTNER_WEBHOOK_LEASE_SECONDS
+        value: "120"
+      - key: PARTNER_WEBHOOK_MAX_ATTEMPTS
+        value: "8"
