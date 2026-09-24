@@ -6,7 +6,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "worker:webhooks": "node workers/partnerWebhookWorker.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
