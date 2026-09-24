@@ -75,8 +75,40 @@ app.use((error, req, res, next) => {
   });
 });
 
+async function runStartupSelfCheck() {
+  try {
+    const { getSupabaseAdminClient } = require('./lib/supabase');
+    const db = getSupabaseAdminClient();
+
+    const partnersResult = await db.from('partners').select('id', { count: 'exact', head: true });
+    if (partnersResult.error) throw partnersResult.error;
+
+    const routesResult = await db.from('partner_payment_routes_v2')
+      .select('partner_terminal_id', { count: 'exact', head: true });
+    if (routesResult.error) throw routesResult.error;
+
+    const banksResult = await db.from('banks').select('id', { count: 'exact', head: true });
+    if (banksResult.error) throw banksResult.error;
+
+    console.log('[startup-self-check:ok]', {
+      database: 'WHITECAPITAL',
+      partners: Number(partnersResult.count || 0),
+      routableTerminals: Number(routesResult.count || 0),
+      banks: Number(banksResult.count || 0),
+    });
+  } catch (error) {
+    console.error('[startup-self-check:error]', {
+      message: error?.message || String(error),
+      code: error?.code || null,
+    });
+  }
+}
+
 if (require.main === module) {
-  app.listen(PORT, HOST, () => console.log(`WHITECAPITAL V2 listening on ${HOST}:${PORT}`));
+  app.listen(PORT, HOST, () => {
+    console.log(`WHITECAPITAL V2 listening on ${HOST}:${PORT}`);
+    runStartupSelfCheck();
+  });
 }
 
 module.exports = app;
