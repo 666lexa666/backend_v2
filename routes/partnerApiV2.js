@@ -2,6 +2,7 @@ const express = require('express');
 const { partnerApiAuth } = require('../lib/partnerApiAuth');
 const { createPaymentCore, getPartnerPayment, setPaymentProviderResult, markPaymentFailed } = require('../lib/paymentCore');
 const { executeQrPayment } = require('../lib/providerQr');
+const { executeCardPayment } = require('../lib/providerCard');
 const { findSubscriptionInstrument, chargeSbpSubscription } = require('../lib/subscriptionService');
 
 const router = express.Router();
@@ -39,26 +40,34 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
     };
 
     const result = await createPaymentCore(input);
-    let bankResponse = null;
+    let providerResponse = null;
 
-    if (method === 'SBP') {
-      try {
-        bankResponse = await executeQrPayment({ payment: result.payment, runtime: result.runtime, input });
+    try {
+      if (method === 'SBP') {
+        providerResponse = await executeQrPayment({ payment: result.payment, runtime: result.runtime, input });
         await setPaymentProviderResult(result.payment.payment_pk, {
           status: 'pending',
-          providerOrderId: bankResponse.bankOrderId || null,
-          qrcId: bankResponse.qrcId || null,
-          qrPayload: bankResponse.payload || null,
+          providerCode: result.runtime.providerCode || null,
+          providerOrderId: providerResponse.bankOrderId || null,
+          qrcId: providerResponse.qrcId || null,
+          qrPayload: providerResponse.payload || null,
         });
-      } catch (error) {
-        await markPaymentFailed(result.payment.payment_pk, error).catch(() => {});
-        return res.status(502).json({
-          success: false,
-          error: 'PROVIDER_PAYMENT_FAILED',
-          message: 'Платежный провайдер отклонил создание платежа',
-          paymentId: result.payment.id,
+      } else {
+        providerResponse = await executeCardPayment({ payment: result.payment, runtime: result.runtime, input });
+        await setPaymentProviderResult(result.payment.payment_pk, {
+          status: 'pending',
+          providerCode: result.runtime.providerCode || null,
+          providerOrderId: providerResponse.bankOrderId || null,
         });
       }
+    } catch (error) {
+      await markPaymentFailed(result.payment.payment_pk, error).catch(() => {});
+      return res.status(502).json({
+        success: false,
+        error: 'PROVIDER_PAYMENT_FAILED',
+        message: 'Платежный провайдер отклонил создание платежа',
+        paymentId: result.payment.id,
+      });
     }
 
     return res.status(201).json({
@@ -66,7 +75,7 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
       payment: {
         id: result.payment.id,
         requestId: result.payment.request_id,
-        status: method === 'SBP' ? 'pending' : result.payment.status,
+        status: 'pending',
         method: result.payment.payment_type,
         amount: Number(result.payment.amount_minor),
         currency: result.payment.currency,
@@ -74,8 +83,12 @@ router.post('/payments', partnerApiAuth(), async (req, res, next) => {
         terminalId: result.payment.partner_terminal_id,
         orderId: result.payment.partner_order_id,
         qr: method === 'SBP' ? {
-          id: bankResponse?.qrcId || null,
-          payload: bankResponse?.payload || null,
+          id: providerResponse?.qrcId || null,
+          payload: providerResponse?.payload || null,
+        } : null,
+        card: method === 'CARD' ? {
+          bankOrderId: providerResponse?.bankOrderId || null,
+          formUrl: providerResponse?.formUrl || null,
         } : null,
         createdAt: result.payment.created_at,
       },
@@ -120,6 +133,9 @@ router.get('/payments/:id', partnerApiAuth(), async (req, res, next) => {
         createdAt: payment.created_at,
         updatedAt: payment.updated_at,
         qr: provider ? { id: provider.provider_qrc_id || payment.qrc_id || null, payload: provider.qr_payload || null } : null,
+        card: String(payment.payment_type).toUpperCase() === 'CARD' && provider ? {
+          bankOrderId: provider.provider_order_id || null,
+        } : null,
         refunds: refunds.map((row) => ({ id: row.id, amount: Number(row.amount_minor), status: row.status, completedAt: row.completed_at })),
       },
     });

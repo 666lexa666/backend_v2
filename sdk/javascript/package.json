@@ -1,0 +1,16 @@
+{
+  "name": "@whitecapital/sdk",
+  "version": "0.1.0",
+  "description": "Official WhiteCapital Partner API V2 SDK",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "types": "./src/index.d.ts",
+  "files": ["src", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}
