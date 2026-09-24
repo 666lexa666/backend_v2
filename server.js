@@ -37,6 +37,7 @@ app.use('/admin', require('./routes/adminAuth'));
 app.use('/admin', require('./routes/adminTerminals'));
 app.use('/admin/payouts', require('./routes/adminPayouts'));
 app.use('/admin/expenses', require('./routes/adminExpenses'));
+app.use('/client', require('./routes/clientPortal'));
 app.use('/client', require('./routes/clientTerminals'));
 app.use('/client/payouts', require('./routes/clientPayouts'));
 
