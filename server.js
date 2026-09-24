@@ -21,6 +21,9 @@ app.get('/health', (req, res) => {
   });
 });
 
+app.use('/webhook', require('./routes/bankWebhook'));
+app.use('/webhook-dolinsk', require('./routes/bankWebhookDolinsk'));
+
 app.use('/qr', require('./routes/partnerQrLegacy'));
 app.use('/refund', require('./routes/partnerRefundLegacy'));
 app.use('/currency-rate', require('./routes/partnerCurrencyRate'));
