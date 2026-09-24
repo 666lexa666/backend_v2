@@ -7,6 +7,7 @@ const { executeQrPayment }=require('../lib/providerQr');
 const { findBankById }=require('../lib/legacyBankAdapter');
 const { findSubscriptionInstrument,chargeSbpSubscription,chargeCardSubscription }=require('../lib/subscriptionService');
 const { normalizePartnerOrderId }=require('../lib/legacyPartnerCompatibility');
+const { isSandboxPartner,createSandboxPayment }=require('../lib/sandboxPaymentService');
 
 const router=express.Router();
 
@@ -395,6 +396,50 @@ router.post('/subscriptions/charge',partnerApiAuth(),async(req,res,next)=>{
     }
 
     try{
+      if(isSandboxPartner(req.partner)){
+        const runtime=await loadTerminalRuntime({id:instrument.partner_terminal_id});
+        if(!runtime){
+          return res.status(409).json({
+            success:false,error:'INSTRUMENT_TERMINAL_UNAVAILABLE',
+            message:'Исходный терминал подписки не найден или выключен',
+          });
+        }
+        const method=String(instrument.payment_method || 'SBP').toUpperCase();
+        const sandbox=await createSandboxPayment({
+          partner:req.partner,
+          runtime,
+          input:{
+            apiVersion:'v1',
+            partnerId:req.partner.id,
+            amountMinor:amount,
+            transactionCurrency:'RUB',
+            accountCurrency:req.partner.account_currency || 'RUB',
+            currencyMarkupPercent:req.partner.currency_markup_percent || 0,
+            method,
+            projectId:instrument.project_id || runtime.projectId || null,
+            terminalId:instrument.partner_terminal_id,
+            orderId:partnerOrderId.value,
+            paymentPurpose,
+            qrcType:method==='SBP'?'02':null,
+            expDt:req.partner.qr_exp_dt ?? 15,
+            localExpDt:req.partner.qr_local_exp_dt ?? 900,
+            commissionPercent:req.partner.commission_percent ?? null,
+          },
+          extra:{
+            subscriptionInstrumentId:instrument.id,
+            subscriptionQrcId:instrument.subscription_qrc_id || null,
+            cardToken:instrument.card_token || null,
+          },
+        });
+        return res.json({
+          success:true,
+          paymentId:sandbox.data.id,
+          orderId:sandbox.data.partnerOrderId || null,
+          ...(method==='SBP'?{qrcId:sandbox.data.qrcId}:{}),
+          bankResponse:{sandbox:true,status:'ACSC'},
+        });
+      }
+
       if(String(instrument.payment_method).toUpperCase()==='SBP'){
         const result=await chargeSbpSubscription({
           partner:req.partner,
