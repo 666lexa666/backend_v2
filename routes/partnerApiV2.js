@@ -2,6 +2,7 @@ const express = require('express');
 const { partnerApiAuth } = require('../lib/partnerApiAuth');
 const { createPaymentCore, getPartnerPayment, setPaymentProviderResult, markPaymentFailed } = require('../lib/paymentCore');
 const { executeQrPayment } = require('../lib/providerQr');
+const { findSubscriptionInstrument, chargeSbpSubscription } = require('../lib/subscriptionService');
 
 const router = express.Router();
 
@@ -123,6 +124,78 @@ router.get('/payments/:id', partnerApiAuth(), async (req, res, next) => {
       },
     });
   } catch (error) {
+    return next(error);
+  }
+});
+
+router.post('/subscriptions/charge', partnerApiAuth(), async (req, res, next) => {
+  try {
+    const amount = Number(req.body?.amount);
+    const paymentPurpose = String(req.body?.description ?? req.body?.paymentPurpose ?? '').trim();
+    const instrumentId = req.body?.instrumentId ? String(req.body.instrumentId) : null;
+    const subscriptionQrcId = req.body?.subscriptionQrcId ? String(req.body.subscriptionQrcId) : null;
+
+    const errors = [];
+    if (!Number.isSafeInteger(amount) || amount <= 0) errors.push('amount должен быть положительным целым числом в копейках');
+    if (!paymentPurpose) errors.push('description обязателен');
+    if (!instrumentId && !subscriptionQrcId) errors.push('instrumentId или subscriptionQrcId обязателен');
+    if (errors.length) return res.status(400).json({ success: false, error: 'VALIDATION_ERROR', details: errors });
+
+    const instrument = await findSubscriptionInstrument({
+      partnerId: req.partner.id,
+      instrumentId,
+      subscriptionQrcId,
+      customerId: req.body?.customerId || null,
+    });
+
+    if (!instrument) {
+      return res.status(404).json({
+        success: false,
+        error: 'SUBSCRIPTION_NOT_FOUND',
+        message: 'Активная подписка не найдена',
+      });
+    }
+
+    const result = await chargeSbpSubscription({
+      partner: req.partner,
+      instrument,
+      amount,
+      paymentPurpose,
+      orderId: req.body?.orderId || null,
+      apiVersion: 'v2',
+    });
+
+    return res.status(201).json({
+      success: true,
+      payment: {
+        id: result.payment.id,
+        status: 'pending',
+        method: 'SBP',
+        amount: Number(result.payment.amount_minor),
+        currency: result.payment.currency,
+        orderId: result.payment.partner_order_id,
+        qr: {
+          id: result.qrResponse.qrcId || null,
+          payload: result.qrResponse.payload || null,
+        },
+        providerResponse: result.bankResponse,
+      },
+    });
+  } catch (error) {
+    if (error.statusCode && error.code) {
+      return res.status(error.statusCode).json({
+        success: false,
+        error: error.code,
+        message: error.message,
+      });
+    }
+    if (error.publicCode) {
+      return res.status(502).json({
+        success: false,
+        error: 'PROVIDER_SUBSCRIPTION_CHARGE_FAILED',
+        message: 'Провайдер отклонил списание по подписке',
+      });
+    }
     return next(error);
   }
 });

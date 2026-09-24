@@ -24,6 +24,7 @@ app.get('/health', (req, res) => {
 // Public Partner API: V1 compatibility + new V2 contract.
 app.use('/qr', require('./routes/partnerQrLegacy'));
 app.use('/currency-rate', require('./routes/partnerCurrencyRate'));
+app.use('/checkout', require('./routes/partnerCheckoutLegacy'));
 app.use('/v2', require('./routes/partnerApiV2'));
 // /balance is intentionally removed in V2.
 
