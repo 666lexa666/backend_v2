@@ -21,14 +21,14 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Public Partner API: V1 compatibility + new V2 contract.
 app.use('/qr', require('./routes/partnerQrLegacy'));
+app.use('/refund', require('./routes/partnerRefundLegacy'));
 app.use('/currency-rate', require('./routes/partnerCurrencyRate'));
 app.use('/checkout', require('./routes/partnerCheckoutLegacy'));
 app.use('/v2', require('./routes/partnerApiV2'));
+app.use('/v2', require('./routes/partnerRefundV2'));
 // /balance is intentionally removed in V2.
 
-// Internal V2 APIs for the cabinet/admin frontend.
 app.use('/admin', require('./routes/adminAuth'));
 app.use('/admin', require('./routes/adminTerminals'));
 app.use('/admin/payouts', require('./routes/adminPayouts'));
