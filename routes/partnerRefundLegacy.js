@@ -1,6 +1,7 @@
 const express = require('express');
 const { partnerApiAuth } = require('../lib/partnerApiAuth');
 const { refundPayment } = require('../lib/refundService');
+const { isSandboxPartner,requestSandboxRefund }=require('../lib/sandboxPaymentService');
 
 const router = express.Router();
 
@@ -31,6 +32,21 @@ router.post('/', partnerApiAuth(), async (req,res,next)=>{
     }
 
     try {
+      if(isSandboxPartner(req.partner)){
+        const result=await requestSandboxRefund({partner:req.partner,paymentId,amount,remitInfo});
+        return res.status(202).json({
+          success:true,
+          paymentId:result.payment.data.id,
+          status:'refund_requested',
+          refundRefId:result.refund.refundRefId,
+          internalTxId:result.refund.internalTxId,
+          amount:Number(result.refund.amountMinor),
+          bankStatusCode:202,
+          refundBankStatus:null,
+          message:'Возврат запрошен',
+        });
+      }
+
       const result=await refundPayment({partner:req.partner,paymentId,amount,remitInfo});
       if (result.existing) return res.status(202).json(result.response);
 
