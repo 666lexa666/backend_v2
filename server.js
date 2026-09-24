@@ -25,6 +25,7 @@ app.use('/webhook', require('./routes/bankWebhook'));
 app.use('/webhook-dolinsk', require('./routes/bankWebhookDolinsk'));
 
 app.use('/qr', require('./routes/partnerQrLegacy'));
+app.use('/card', require('./routes/partnerCardLegacy'));
 app.use('/refund', require('./routes/partnerRefundLegacy'));
 app.use('/currency-rate', require('./routes/partnerCurrencyRate'));
 app.use('/checkout', require('./routes/partnerCheckoutLegacy'));
